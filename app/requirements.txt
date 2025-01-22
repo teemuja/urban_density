@@ -1,11 +1,7 @@
 streamlit
-h3
+pandas
+geopandas
 osmnx
 momepy
-boto3
-duckdb
 geocoder
-owslib
 plotly
-statsmodels
-scikit-learn
