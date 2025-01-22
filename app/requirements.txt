@@ -1,0 +1,11 @@
+streamlit
+h3
+osmnx
+momepy
+boto3
+duckdb
+geocoder
+owslib
+plotly
+statsmodels
+scikit-learn

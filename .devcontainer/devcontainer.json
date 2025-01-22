@@ -1,0 +1,37 @@
+{
+	"name": "Existing Dockerfile",
+	"context": "..",
+	"dockerFile": "../Dockerfile",
+	"customizations": {
+	  "codespaces": {
+		"openFiles": [
+		  "README.md",
+		  "app.py"
+		]
+	  },
+	  "vscode": {
+		"settings": {
+		  "python.defaultInterpreterPath": "/app/.venv/bin/python",
+		  "python.autoComplete.extraPaths": ["/app/.venv/lib/python3.x/site-packages"]
+		},
+		"extensions": [
+		  "ms-python.python",
+		  "ms-python.vscode-pylance"
+		]
+	  }
+	},
+	"portsAttributes": {
+	  "8501": {
+		"label": "Application",
+		"onAutoForward": "openPreview"
+	  }
+	},
+	"forwardPorts": [
+	  8501
+	],
+	"postCreateCommand": "pip install --upgrade pip && pip install streamlit",
+	"remoteEnv": {
+	  "PYTHONPATH": "/app/.venv/lib/python3.x/site-packages"
+	}
+  }
+  
