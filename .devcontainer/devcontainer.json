@@ -5,7 +5,6 @@
 	"customizations": {
 	  "codespaces": {
 		"openFiles": [
-		  "README.md",
 		  "app.py"
 		]
 	  },
@@ -29,7 +28,6 @@
 	"forwardPorts": [
 	  8501
 	],
-	"postCreateCommand": "pip install --upgrade pip && pip install streamlit",
 	"remoteEnv": {
 	  "PYTHONPATH": "/app/.venv/lib/python3.x/site-packages"
 	}
