@@ -23,7 +23,8 @@ st.markdown("Morphological density measurements using Open Street Map data")
 @st.cache_data(ttl=900, max_entries=5)
 def get_building_data(address, tags, radius=500):
     """Get building footprint data around an address using latest OSMnx."""
-    # Get features using current method
+    
+    # Get features using osmnx
     try:
         gdf = ox.features_from_address(address, tags, dist=radius)
     except:
