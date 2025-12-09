@@ -18,7 +18,7 @@ from libpysal import graph
 
 import streamlit as st
 
-bg_url = "https://raw.githubusercontent.com/teemuja/urban_density/main/assets/background.png"
+bg_url = "https://raw.githubusercontent.com/teemuja/urban_density/main/assets/background.jpg"
 
 page_bg_css = f"""
 <style>
@@ -305,93 +305,186 @@ except Exception as e:
     st.caption("Floor information is incomplete for this area.")
 
 # -------------------------------------------------------------------
+import numpy as np
+import geopandas as gpd
+from libpysal import graph
+import momepy
+import streamlit as st
+from typing import Optional
 
-@st.cache_data(ttl=120)
+#@st.cache_data(ttl=120)
 def osm_densities(_buildings: gpd.GeoDataFrame) -> Optional[gpd.GeoDataFrame]:
     """
     Calculate morphological density measures for buildings.
-    
-    Args:
-        _buildings: GeoDataFrame with building footprints
-        
-    Returns:
-        GeoDataFrame with density measures or None if error occurs
-    """
-    try:
-        # Project to UTM for accurate area calculations
-        utm = _buildings.estimate_utm_crs()
-        gdf = _buildings.to_crs(utm)
 
-        # Preprocess geometries to ensure valid tessellation input
+    Parameters
+    ----------
+    _buildings : GeoDataFrame
+        GeoDataFrame with building footprints (EPSG:4326 or any projected CRS).
+
+    Returns
+    -------
+    GeoDataFrame
+        Input buildings with added density metrics in EPSG:4326.
+        Returns None if something goes wrong.
+    """
+
+    if _buildings.empty:
+        return None
+
+    # ------------------------------------------------------------------
+    # 1. Project to UTM for accurate area calculations
+    # ------------------------------------------------------------------
+    try:
+        utm = _buildings.estimate_utm_crs()
+        gdf = _buildings.to_crs(utm).copy()
+    except Exception as e:
+        st.error(f"CRS / projection error: {e}")
+        return None
+
+    # Make sure we have a clean geometry column
+    gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()].copy()
+
+    # Ensure 'building:levels' column exists
+    if "building:levels" not in gdf.columns:
+        gdf["building:levels"] = np.nan
+
+    # ------------------------------------------------------------------
+    # 2. Preprocess and tessellate
+    # ------------------------------------------------------------------
+    try:
+        # Preprocess (fixes typical OSM weirdness)
         gdf = momepy.preprocess(gdf)
 
-        # Generate unique IDs
-        gdf['uID'] = momepy.unique_id(gdf)
+        # You can also define a limit if you want to clip (optional)
+        # limit = momepy.buffered_limit(gdf, buffer="adaptive")
+        # tessellation = momepy.morphological_tessellation(gdf, clip=limit)
 
-        # Create morphological tessellation using functional API
-        limit = momepy.buffered_limit(gdf)
-        tessellation = momepy.morphological_tessellation(gdf, unique_id='uID', limit=limit)
-        tessellation = tessellation.merge(gdf[['uID', 'building:levels']])
+        tessellation = momepy.morphological_tessellation(gdf)
 
-        # Build contiguity graph from tessellation
-        contiguity_graph = graph.Graph.build_contiguity(tessellation, rook=False)
-        
-        # Get higher order neighbors (2-nearest neighbors)
-        higher_order_graph = contiguity_graph.higher_order(k=2, lower_order=True)
+        # Verify that tessellation matches buildings – drop collapsed ones
+        collapsed, multipolygons = momepy.verify_tessellation(tessellation, gdf)
+        if len(collapsed) > 0:
+            # Drop problem buildings & corresponding tessellation cells
+            gdf = gdf.drop(index=collapsed)
+            tessellation = tessellation.drop(index=collapsed)
+            st.info(f"Dropped {len(collapsed)} collapsed buildings from tessellation.")
 
-        # Calculate Ground Space Index (GSI) - direct division
-        tessellation_areas = tessellation.area
-        building_areas = gdf.area
-        gdf['GSI'] = round(building_areas / tessellation_areas, 3)
+        # Align indices strictly (momepy uses original index for tessellation)
+        gdf = gdf.loc[tessellation.index].copy()
 
-        # Handle missing 'building:levels' data using graph describe
-        # Calculate median floor levels for neighbors
-        tess_with_levels = tessellation.copy()
-        tess_with_levels['building:levels'] = gdf['building:levels'].values
-        
-        neighbor_stats = higher_order_graph.describe(tess_with_levels['building:levels'])
-        gdf['floors'] = gdf['building:levels'].fillna(
-            neighbor_stats['median']
-        ).fillna(1).astype(int)
-
-        # Calculate Gross Floor Area (GFA)
-        gdf['footprint'] = gdf.geometry.area
-        gdf['GFA'] = gdf['footprint'] * gdf['floors']
-
-        # Calculate Floor Space Index (FSI)
-        gdf['FSI'] = round(gdf['GFA'] / tessellation.area, 3)
-
-        # Calculate Open Space Ratio (OSR)
-        gdf['OSR'] = round((1 - gdf['GSI']) / gdf['FSI'], 3)
-
-        # Calculate neighborhood densities using graph describe
-        tessellation = tessellation.merge(gdf[['uID', 'footprint', 'GFA', 'OSR']])
-        
-        footprint_density = higher_order_graph.describe(tessellation['footprint'], statistics=['sum'])
-        gdf['GSI_ND'] = round(footprint_density['sum'] / tessellation.area, 2)
-        
-        gfa_density = higher_order_graph.describe(tessellation['GFA'], statistics=['sum'])
-        gdf['FSI_ND'] = round(gfa_density['sum'] / tessellation.area, 2)
-        
-        gdf['OSR_ND'] = round((1 - gdf['GSI_ND']) / gdf['FSI_ND'], 2)
-        
-        osr_stats = higher_order_graph.describe(tessellation['OSR'], statistics=['mean'])
-        gdf['OSR_ND_mean'] = round(osr_stats['mean'], 2)
-
-        # Clip OSR values to remove outliers
-        osr_clip_value = gdf['OSR'].quantile(0.99)
-        gdf['OSR'] = gdf['OSR'].clip(upper=osr_clip_value)
-        gdf['OSR_ND'] = gdf['OSR_ND'].clip(upper=osr_clip_value)
-        gdf['OSR_ND_mean'] = gdf['OSR_ND_mean'].clip(upper=osr_clip_value)
-
-        # Reproject back to EPSG:4326
-        gdf_out = gdf.to_crs(epsg=4326)
-
-        return gdf_out
-        
     except Exception as e:
-        logger.error(f"Error calculating densities: {e}")
+        st.error(f"Tessellation error: {e}")
         return None
+
+    st.toast(f"Generated {len(tessellation)} morphological plots for {len(gdf)} buildings.")
+
+    # ------------------------------------------------------------------
+    # 3. Build contiguity graph (queen by default) and higher-order graph
+    # ------------------------------------------------------------------
+    try:
+        contiguity_graph = graph.Graph.build_contiguity(tessellation, rook=False)
+        higher_order_graph = (
+            contiguity_graph
+            .higher_order(k=2, lower_order=True)
+            .assign_self_weight()  # include focal cell in its own neighborhood
+        )
+    except Exception as e:
+        st.error(f"Graph building error: {e}")
+        return None
+
+    # ------------------------------------------------------------------
+    # 4. Per-building metrics: GSI, floors, GFA, FSI, OSR
+    # ------------------------------------------------------------------
+    tessellation_areas = tessellation.geometry.area
+    building_areas = gdf.geometry.area
+
+    # Ground Space Index (coverage ratio)
+    gdf["footprint"] = building_areas
+    gdf["GSI"] = (building_areas / tessellation_areas).replace([np.inf, -np.inf], np.nan)
+    gdf["GSI"] = gdf["GSI"].round(3)
+
+    # Fill missing floors using neighborhood median
+    try:
+        levels_series = gdf["building:levels"].astype("float64")
+    except Exception:
+        levels_series = pd.to_numeric(gdf["building:levels"], errors="coerce")
+
+    neighbor_stats = higher_order_graph.describe(levels_series, statistics=["median"])
+    # neighbor_stats is a DataFrame indexed by the same index as tessellation/gdf
+    levels_filled = levels_series.fillna(neighbor_stats["median"]).fillna(1)
+    gdf["floors"] = levels_filled.round().astype(int)
+
+    # GFA and FSI
+    gdf["GFA"] = gdf["footprint"] * gdf["floors"]
+    gdf["FSI"] = (gdf["GFA"] / tessellation_areas).replace([np.inf, -np.inf], np.nan)
+    gdf["FSI"] = gdf["FSI"].round(3)
+
+    # Open Space Ratio (OSR = open space per GFA)
+    # here: (1 - GSI) / FSI, safely
+    with np.errstate(divide="ignore", invalid="ignore"):
+        osr = (1 - gdf["GSI"]) / gdf["FSI"]
+    osr = osr.replace([np.inf, -np.inf], np.nan)
+    gdf["OSR"] = osr.round(3)
+
+    # ------------------------------------------------------------------
+    # 5. Neighborhood densities (_ND) using Graph.describe
+    #     We follow momepy docs: sums over neighborhood / sum of areas.
+    # ------------------------------------------------------------------
+    try:
+        # Sum of areas in each neighborhood
+        areas_sum = higher_order_graph.describe(tessellation_areas, statistics=["sum"])["sum"]
+
+        # Sum of building footprints in neighborhood
+        footprint_sum = higher_order_graph.describe(gdf["footprint"], statistics=["sum"])["sum"]
+
+        # GSI_ND = Sum(footprint) / Sum(area) in neighborhood
+        gsi_nd = footprint_sum / areas_sum
+        gsi_nd = gsi_nd.replace([np.inf, -np.inf], np.nan)
+        gdf["GSI_ND"] = gsi_nd.round(2)
+
+        # Sum of GFA in neighborhood
+        gfa_sum = higher_order_graph.describe(gdf["GFA"], statistics=["sum"])["sum"]
+
+        # FSI_ND = Sum(GFA) / Sum(area) in neighborhood
+        fsi_nd = gfa_sum / areas_sum
+        fsi_nd = fsi_nd.replace([np.inf, -np.inf], np.nan)
+        gdf["FSI_ND"] = fsi_nd.round(2)
+
+        # OSR_ND computed consistently: (1 - GSI_ND) / FSI_ND, safely
+        with np.errstate(divide="ignore", invalid="ignore"):
+            osr_nd = (1 - gdf["GSI_ND"]) / gdf["FSI_ND"]
+        osr_nd = osr_nd.replace([np.inf, -np.inf], np.nan)
+        gdf["OSR_ND"] = osr_nd.round(2)
+
+        # Neighborhood mean of OSR (not recomputing formula)
+        osr_mean = higher_order_graph.describe(gdf["OSR"], statistics=["mean"])["mean"]
+        gdf["OSR_ND_mean"] = osr_mean.round(2)
+
+    except Exception as e:
+        st.error(f"Neighborhood density (_ND) calculation error: {e}")
+        return None
+
+    # ------------------------------------------------------------------
+    # 6. Clip OSR values to remove extreme outliers
+    # ------------------------------------------------------------------
+    if gdf["OSR"].notna().any():
+        osr_clip_value = gdf["OSR"].quantile(0.99)
+        for col in ["OSR", "OSR_ND", "OSR_ND_mean"]:
+            if col in gdf.columns:
+                gdf[col] = gdf[col].clip(upper=osr_clip_value)
+
+    # ------------------------------------------------------------------
+    # 7. Reproject back to EPSG:4326
+    # ------------------------------------------------------------------
+    try:
+        gdf_out = gdf.to_crs(epsg=4326)
+    except Exception as e:
+        st.error(f"Reprojection error: {e}")
+        return None
+
+    return gdf_out
+
 
 
 def classify_density(density_data: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -465,12 +558,8 @@ if not run:
 
 # Calculate densities
 with st.spinner('Calculating morphological densities... This may take a minute.'):
-    try:
-        density_data = osm_densities(my_buildings)
-    except Exception as e:
-        st.error("Error during density calculation. Try selecting fewer building types or a different area.")
-        logger.error(f"Density calculation error: {type(e).__name__}")
-        density_data = None
+    density_data = osm_densities(my_buildings)
+    #st.data_editor(density_data, width=800)
 
     
 if density_data is None:
