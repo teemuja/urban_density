@@ -28,7 +28,7 @@ def get_building_data(address, tags, radius=500):
     try:
         gdf = ox.features_from_address(address, tags, dist=radius)
     except:
-        st.warning('Address not found in OSM data or OSMNX geocoding quota full.')
+        st.warning('Address not found in OSM data or geocoding quota full.')
         st.stop()
     
     # Project the GeoDataFrame
