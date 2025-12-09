@@ -7,8 +7,7 @@ WORKDIR /app
 COPY ./app /app
 RUN python3 -m venv /app/.venv && \
     /app/.venv/bin/pip install --upgrade pip && \
-    /app/.venv/bin/pip install -r /app/requirements.txt && \
-    /app/.venv/bin/pip install --upgrade pandas
+    /app/.venv/bin/pip install -r /app/requirements.txt
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8501
 CMD ["/.venv/bin/streamlit", "run", "app.py"]

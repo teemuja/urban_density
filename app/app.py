@@ -1,10 +1,6 @@
 import streamlit as st
-from ast import Pass
-from unittest import case
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import Point
-import numpy as np
 import osmnx as ox
 import momepy
 import plotly.express as px
@@ -28,7 +24,11 @@ st.markdown("Morphological density measurements using Open Street Map data")
 def get_building_data(address, tags, radius=500):
     """Get building footprint data around an address using latest OSMnx."""
     # Get features using current method
-    gdf = ox.features.features_from_address(address, tags, dist=radius)
+    try:
+        gdf = ox.features_from_address(address, tags, dist=radius)
+    except:
+        st.warning('Address not found in OSM data or OSMNX geocoding quota full.')
+        st.stop()
     
     # Project the GeoDataFrame
     fp_proj = ox.projection.project_gdf(gdf)
@@ -275,7 +275,7 @@ with st.expander(f"Density nomograms for {add}", expanded=True):
     tags = case_data.groupby(['building'])['building'].count()
     toptags = tags.sort_values(ascending=False).head(3)
     m1,m2 = st.columns(2)
-    m1.metric(label=f"Total GFA in {add} in 500m radius ({bu_count} buildings)", value=f"{tot_gfa:,.0f} sqrm", delta=f"Areal density = {e_area:.2f}")
+    m1.metric(label=f"Total GFA in {add} in 500m radius ({bu_count} buildings)", value=f"{tot_gfa:,.0f} sqrm", delta=f"Density (FSI/FAR) = {e_area:.2f}")
     #m2.metric(label=f"GFA {toptags.index[0]}", value=f"{toptags[0][0]:.0f}", delta=f"{e_plot:.0f}")
     st.caption('Values are based on footprints and floor number information. Underground GFA is excluded.')
 
@@ -346,9 +346,9 @@ with st.expander("What is this?", expanded=False):
 
 #footer
 st.markdown('---')
-footer_title = '''
-[![MIT license](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/teemuja/)
-'''
-st.markdown(footer_title)
-disclamer = 'Data papers are constant work in progress and will be upgraded, changed & fixed while research go on.'
-st.caption('Disclaimer: ' + disclamer)
+license = f'''
+        <a href="https://share.streamlit.io/user/teemuja" target="_blank">
+            <img src="https://img.shields.io/badge/&copy;-teemuja-fab43a" alt="teemuja" title="Teemu Jama">
+        </a>
+        '''
+st.markdown(license, unsafe_allow_html=True)

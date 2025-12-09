@@ -130,7 +130,7 @@ dmypy.json
 
 # env based
 .DS_store
-.streamlit
+secrets.toml
 cache
 local_data
 temp
