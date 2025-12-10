@@ -681,8 +681,7 @@ with st.expander("What is this?", expanded=False):
     **FSI** = Floor Space Index = FAR = Floor Area Ratio = Ratio of floor area per total area of _morphological plot_<br>
     **GSI** = Ground Space Index = Coverage = Ratio of building footprint per total area of _morphological plot_<br>
     **OSR** = Open Space Ratio = Ratio of non-build space per square meter of gross floor area<br>
-    **i_ND** = Value of the _i_-index in neighborhood scale<br>
-    **OSR_ND_mean** = Average OSR of plots in nearby neighborhood<br>
+    **OSR_ND** = Average OSR of plots in nearby neighborhood<br>
     
     Density classification is based on OSR-values:<br>
     <i>
