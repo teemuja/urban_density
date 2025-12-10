@@ -9,53 +9,16 @@ import geopandas as gpd
 import osmnx as ox
 import momepy
 import plotly.express as px
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 import logging
 import time
-import geocoder
 from libpysal import graph
+import numpy as np
 
+from mapbox import Geocoder
 
 import streamlit as st
 
-bg_url = "https://raw.githubusercontent.com/teemuja/urban_density/main/assets/background.jpg"
-
-page_bg_css = f"""
-<style>
-[data-testid="stAppViewContainer"] {{
-    background-image: url("{bg_url}");
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
-}}
-
-[data-testid="stHeader"] {{
-    background: rgba(0,0,0,0);  /* make header transparent */
-}}
-
-[data-testid="stSidebar"] {{
-    background: rgba(255,255,255,0.7); /* optional styling */
-}}
-</style>
-"""
-st.markdown(page_bg_css, unsafe_allow_html=True)
-
-
-def getlatlon(add: str) -> Optional[Tuple[float, float]]:
-    """Get latitude and longitude from address using Mapbox geocoder."""
-    try:
-        loc = geocoder.mapbox(add, key=st.secrets['MAPBOX_TOKEN'])
-        if loc.ok:
-            lat = loc.lat
-            lon = loc.lng
-            return (lat, lon)
-        else:
-            logger.warning(f"Geocoder could not find location: {add}")
-            return None
-    except Exception as e:
-        logger.error(f"Geocoding error for '{add}': {type(e).__name__}")
-        return None
-    
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -98,21 +61,89 @@ except Exception as e:
     logger.error(f"Error loading secrets: {type(e).__name__}")
     st.stop()
 
-# Header
+#set geocoder stuff
+@st.cache_resource
+def get_geocoder() -> Geocoder:
+    return Geocoder(access_token=st.secrets["MAPBOX_TOKEN"])
+
+def _format_label(f: Dict) -> str:
+    name = f.get("place_name") or f.get("text") or "Unknown"
+    country = ""
+    for c in f.get("context", []):
+        if c.get("id", "").startswith("country"):
+            country = c.get("short_code", "").upper()
+            break
+    return f"{name} ({country})" if country else name
+
+@st.dialog("Select location")
+def _select_place_dialog(address: str, features: List[Dict], state_key: str):
+    st.write(f"Multiple matches for **{address}**. Select the correct one:")
+    idx = st.radio(
+        "Matches",
+        options=list(range(len(features))),
+        format_func=lambda i: _format_label(features[i]),
+        key=f"{state_key}_radio",
+    )
+    if st.button("Use this location", key=f"{state_key}_confirm"):
+        lon, lat = features[idx]["center"]
+        st.session_state[state_key] = (lat, lon)
+        st.rerun()
+
+def getlatlon(
+    address: str,
+    country: Optional[Tuple[str, ...]] = None,
+    limit: int = 5,
+) -> Optional[Tuple[float, float]]:
+    """
+    Interactive geocoding:
+      - 0 results  -> warn, return None
+      - 1 result   -> return that
+      - >1 results -> dialog to select
+    """
+    geocoder = get_geocoder()
+    country_list = list(country) if country is not None else None
+
+    resp = geocoder.forward(
+        address,
+        limit=limit,
+        types=["place","address", "locality", "neighborhood"],
+        country=country_list
+    )
+    data = resp.json()
+    features = data.get("features") or []
+
+    if not features:
+        logger.warning(f"No result found for: {address}")
+        return None
+
+    if len(features) == 1:
+        lon, lat = features[0]["center"]
+        return (lat, lon)
+
+    state_key = f"geo_{address}"
+
+    # If user already chose once in this session, reuse
+    if state_key in st.session_state:
+        return st.session_state[state_key]
+
+    # Ask user now
+    _select_place_dialog(address, features, state_key)
+    return st.session_state.get(state_key)
+
+
+
+#  ------ Header ------
 st.header("True Density", divider='green')
 st.markdown("Morphological density measurements using Open Street Map data")
 
 
 @st.cache_data(ttl=900, max_entries=5)
-def get_building_data(address: str, tags: dict, radius: int = 500) -> Optional[gpd.GeoDataFrame]:
+def get_building_data(latlon: Tuple[float, float], tags: dict, radius: int = 500) -> Optional[gpd.GeoDataFrame]:
     """
     Get building footprint data around an address using OSMnx.
-    
-    Args:
         address: Location address or place name
         tags: OSM tags dictionary for filtering
         radius: Search radius in meters
-        
     Returns:
         GeoDataFrame with building footprints or None if error occurs
     """
@@ -121,20 +152,11 @@ def get_building_data(address: str, tags: dict, radius: int = 500) -> Optional[g
     
     for attempt in range(max_retries):
         try:
-            # Get features using osmnx
-            logger.info(f"Fetching building data for '{address}' (attempt {attempt + 1}/{max_retries})")
-            
-            # Get coordinates using geocoder
-            latlon = getlatlon(address)
-            if latlon is None:
-                logger.warning(f"Could not geocode address: {address}")
-                return None
-            
             # Fetch buildings from OSM
             gdf = ox.features_from_point(center_point=latlon, tags=tags, dist=radius)
             
             if gdf is None or len(gdf) == 0:
-                logger.warning(f"No buildings found for address: {address}")
+                logger.warning(f"No buildings found")
                 return None
             
             # Project the GeoDataFrame
@@ -144,7 +166,7 @@ def get_building_data(address: str, tags: dict, radius: int = 500) -> Optional[g
             fp_proj = fp_proj[fp_proj.geometry.type == 'Polygon']
             
             if len(fp_proj) == 0:
-                logger.warning(f"No polygon buildings found for address: {address}")
+                logger.warning(f"No polygon buildings found")
                 return None
             
             # Select desired columns, handling missing columns gracefully
@@ -163,7 +185,7 @@ def get_building_data(address: str, tags: dict, radius: int = 500) -> Optional[g
             fp_poly = fp_poly[fp_poly["area"] > 50]
             
             if len(fp_poly) == 0:
-                logger.warning(f"No buildings larger than 50 sqm found for address: {address}")
+                logger.warning(f"No buildings larger than 50 sqm found")
                 return None
             
             # Convert levels to numeric
@@ -176,7 +198,7 @@ def get_building_data(address: str, tags: dict, radius: int = 500) -> Optional[g
             return fp_poly
                 
         except Exception as e:
-            logger.error(f"Error fetching building data for {address} (attempt {attempt + 1}): {type(e).__name__}")
+            logger.error(f"Error fetching building data (attempt {attempt + 1}): {type(e).__name__}")
             # Retry on certain errors
             if attempt < max_retries - 1:
                 error_msg = str(e).lower()
@@ -188,16 +210,13 @@ def get_building_data(address: str, tags: dict, radius: int = 500) -> Optional[g
     
     return None
 
-# USER INPUT
-user_input = st.text_input('Type address or place on earth', placeholder='e.g., Times Square, New York')
 
-if not user_input:
+# USER INPUT
+add = st.text_input('Type address or place on earth', placeholder='e.g., Tapiola Espoo Finland')
+
+if not add:
     st.info("👆 Enter a location to analyze urban density")
     st.stop()
-
-# Clean the address input
-import re
-add = re.sub(' +', ' ', user_input.strip())
 
 # Fetch building data
 with st.spinner(f'Fetching building data from OpenStreetMap for "{add}"... Please wait.'):
@@ -209,8 +228,14 @@ with st.spinner(f'Fetching building data from OpenStreetMap for "{add}"... Pleas
     progress_text.text("⏳ Geocoding address and connecting to OpenStreetMap...")
     
     start_time = time.time()
-    buildings = get_building_data(add, tags, radius)
-    elapsed_time = time.time() - start_time
+    latlon = getlatlon(add) #, country=("fi",))
+
+    if latlon is not None:
+        buildings = get_building_data(latlon, tags={"building": True}, radius=500)
+        elapsed_time = time.time() - start_time
+    else:
+        buildings = None
+        elapsed_time = time.time() - start_time
     
     progress_text.empty()  # Clear progress text
 
@@ -218,12 +243,12 @@ with st.spinner(f'Fetching building data from OpenStreetMap for "{add}"... Pleas
 if buildings is None:
     st.error(f"❌ Could not fetch building data for '{add}'.")
     st.info("""💡 **Possible reasons:**
-    - The location name is not recognized by OpenStreetMap
+    - The location name is not recognized
     - The request timed out (server may be busy)
     - No building data available for this area
     
     **Try:**
-    - Use a more specific address (e.g., "Times Square, New York, NY, USA")
+    - Use a more specific address (e.g., "Tapiolantie 20 Espoo Finland")
     - Try a well-known landmark name
     - Wait a moment and try again if the server was busy
     """)
@@ -305,14 +330,6 @@ except Exception as e:
     st.caption("Floor information is incomplete for this area.")
 
 # -------------------------------------------------------------------
-import numpy as np
-import geopandas as gpd
-from libpysal import graph
-import momepy
-import streamlit as st
-from typing import Optional
-
-#@st.cache_data(ttl=120)
 def osm_densities(_buildings: gpd.GeoDataFrame) -> Optional[gpd.GeoDataFrame]:
     """
     Calculate morphological density measures for buildings.
@@ -557,7 +574,7 @@ if not run:
     st.stop()
 
 # Calculate densities
-with st.spinner('Calculating morphological densities... This may take a minute.'):
+with st.spinner('Calculating morphological densities...'):
     density_data = osm_densities(my_buildings)
     #st.data_editor(density_data, width=800)
 
@@ -637,33 +654,6 @@ try:
             delta=f"Density (FSI/FAR) = {e_area:.2f}"
         )
         st.caption('Values are based on footprints and floor number information. Underground GFA is excluded.')
-
-        # Prepare download data
-        try:
-            save_data = gpd.overlay(
-                density_data.to_crs(3067),
-                focus_gdf.set_crs(3067),
-                how='intersection'
-            ).to_crs(4326)
-            save_data.insert(0, 'TimeStamp', pd.to_datetime('now').replace(microsecond=0))
-            save_data['date'] = pd.to_datetime(save_data['TimeStamp']).dt.date
-            save_me = save_data.drop(
-                columns=['uID', 'TimeStamp', 'OSR_class', 'OSR_ND_class']
-            ).assign(location=add)
-            save_me = save_me.assign(flr_rate=flr_rate if 'flr_rate' in locals() else 0)
-            save_me['wkt'] = save_me.geometry.to_wkt()
-            save_as_wkt = save_me.drop(columns="geometry")
-            raks = save_as_wkt.to_csv().encode('utf-8')
-            
-            st.download_button(
-                label="💾 Save density data as CSV",
-                data=raks,
-                file_name=f'buildings_{add}.csv',
-                mime='text/csv'
-            )
-        except Exception as e:
-            logger.warning(f"Could not prepare download data: {e}")
-            st.caption("Download option unavailable for this dataset")
             
 except Exception as e:
     st.error("Error creating density visualizations. Please try again.")
@@ -681,8 +671,7 @@ with st.expander("What is this?", expanded=False):
     **FSI** = Floor Space Index = FAR = Floor Area Ratio = Ratio of floor area per total area of _morphological plot_<br>
     **GSI** = Ground Space Index = Coverage = Ratio of building footprint per total area of _morphological plot_<br>
     **OSR** = Open Space Ratio = Ratio of non-build space per square meter of gross floor area<br>
-    **i_ND** = Value of the _i_-index in neighborhood scale<br>
-    **OSR_ND_mean** = Average OSR of plots in nearby neighborhood<br>
+    **OSR_ND** = Average OSR of plots in nearby neighborhood<br>
     
     Density classification is based on OSR-values:<br>
     <i>
